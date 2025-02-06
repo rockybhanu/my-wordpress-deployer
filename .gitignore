@@ -26,3 +26,4 @@ out/
 # System-specific files (optional but common):
 .DS_Store
 Thumbs.db
+/wordpress-deployer
