@@ -1,0 +1,10 @@
+POST http://localhost:8080/create-wordpress
+Content-Type: application/json
+
+{
+  "kubeconfig": "/home/ramanuj/.kube/config",
+  "namespace": "lapibazar",
+  "persistence_disk_size": 10,
+  "database_disk_size": 5,
+  "deployment_name": "lapi"
+}

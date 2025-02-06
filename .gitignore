@@ -1,0 +1,28 @@
+# Go build artifacts:
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go coverage tool output (if you use 'go test -coverprofile'):
+*.coverprofile
+
+# Log files:
+*.log
+
+# If you are using Go modules and still vendor your dependencies:
+vendor/
+
+# IDE settings (GoLand / IntelliJ)
+.idea/
+
+# If you create build or output folders:
+bin/
+build/
+out/
+
+# System-specific files (optional but common):
+.DS_Store
+Thumbs.db
