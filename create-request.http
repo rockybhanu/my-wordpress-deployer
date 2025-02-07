@@ -3,7 +3,7 @@ Content-Type: application/json
 
 {
   "kubeconfig": "/home/ramanuj/.kube/config",
-  "namespace": "lapibazar-com",
+  "namespace": "sumbul-in",
   "persistence_disk_size": 10,
   "database_disk_size": 5,
   "deployment_name": "wp-website"

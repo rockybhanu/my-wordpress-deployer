@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -15,7 +19,7 @@ type RequestPayload struct {
 	Namespace         string `json:"namespace,omitempty"`             // Required
 	PersistenceDiskGB int    `json:"persistence_disk_size,omitempty"` // WordPress disk size in GB
 	DatabaseDiskGB    int    `json:"database_disk_size,omitempty"`    // Database disk size in GB
-	DeploymentName    string `json:"deployment_name,omitempty"`       // Prefix for naming
+	DeploymentName    string `json:"deployment_name,omitempty"`       // User-supplied prefix (can be empty)
 }
 
 // APIResponse defines the JSON structure we return upon success/failure.
@@ -52,7 +56,6 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse JSON payload
 	decoder := json.NewDecoder(r.Body)
 	var payload RequestPayload
 	if err := decoder.Decode(&payload); err != nil {
@@ -74,14 +77,12 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if payload.DeploymentName == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		respondJSON(w, APIResponse{
-			Success: false,
-			Message: "deployment_name is required",
-		})
-		return
+
+	// If user did not provide deployment_name, default to "wp"
+	if strings.TrimSpace(payload.DeploymentName) == "" {
+		payload.DeploymentName = "wp"
 	}
+
 	if payload.PersistenceDiskGB <= 0 {
 		payload.PersistenceDiskGB = 5 // default disk size for WordPress
 	}
@@ -89,8 +90,21 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 		payload.DatabaseDiskGB = 5 // default disk size for Database
 	}
 
+	// Generate a random 5-character suffix for uniqueness
+	suffix, err := generateRandomSuffix(5)
+	if err != nil {
+		log.Printf("[ERROR] Failed to generate random suffix: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		respondJSON(w, APIResponse{
+			Success: false,
+			Message: "Could not generate unique suffix",
+		})
+		return
+	}
+
 	// Log the start of the process
 	log.Printf("[INFO] Received request to deploy WordPress: %+v", payload)
+	log.Printf("[INFO] Suffix for uniqueness: %s", suffix)
 
 	// Prepare Kubernetes client
 	log.Println("[INFO] Initializing Kubernetes client...")
@@ -120,18 +134,29 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// We'll create resource names with a function that ensures total length <= 60.
+	dbPVName := buildResourceName(payload.DeploymentName, "db-pv", suffix)
+	dbPVCName := buildResourceName(payload.DeploymentName, "db-pvc", suffix)
+	dbDeploymentName := buildResourceName(payload.DeploymentName, "db", suffix)
+	dbServiceName := buildResourceName(payload.DeploymentName, "db-svc", suffix)
+	dbSecretName := buildResourceName(payload.DeploymentName, "db-secret", suffix)
+
+	wpPVName := buildResourceName(payload.DeploymentName, "wp-pv", suffix)
+	wpPVCName := buildResourceName(payload.DeploymentName, "wp-pvc", suffix)
+	wpDeploymentName := buildResourceName(payload.DeploymentName, "wp", suffix)
+	wpServiceName := buildResourceName(payload.DeploymentName, "wp-svc", suffix)
+
 	// 2. Create hostPath-based PV and PVC for MySQL
-	dbPVName, dbPVCName := payload.DeploymentName+"-db-pv", payload.DeploymentName+"-db-pvc"
 	log.Printf("[INFO] Creating hostPath PV/PVC for MySQL: PV=%s, PVC=%s", dbPVName, dbPVCName)
 	err = createPersistentVolume(ctx, clientSet, payload.Namespace, dbPVName,
-		"/mnt/data/"+payload.Namespace+"/"+payload.DeploymentName+"_db",
+		"/mnt/data/"+payload.Namespace+"/"+dbPVName+"_data",
 		payload.DatabaseDiskGB)
 	if err != nil {
 		log.Printf("[ERROR] Failed to create MySQL PV: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		respondJSON(w, APIResponse{
 			Success: false,
-			Message: "Failed to create MySQL PV",
+			Message: fmt.Sprintf("Failed to create MySQL PV: %v", err),
 		})
 		return
 	}
@@ -142,23 +167,22 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		respondJSON(w, APIResponse{
 			Success: false,
-			Message: "Failed to create MySQL PVC",
+			Message: fmt.Sprintf("Failed to create MySQL PVC: %v", err),
 		})
 		return
 	}
 
 	// 3. Create hostPath-based PV and PVC for WordPress
-	wpPVName, wpPVCName := payload.DeploymentName+"-wp-pv", payload.DeploymentName+"-wp-pvc"
 	log.Printf("[INFO] Creating hostPath PV/PVC for WordPress: PV=%s, PVC=%s", wpPVName, wpPVCName)
 	err = createPersistentVolume(ctx, clientSet, payload.Namespace, wpPVName,
-		"/mnt/data/"+payload.Namespace+"/"+payload.DeploymentName+"_wordpress",
+		"/mnt/data/"+payload.Namespace+"/"+wpPVName+"_data",
 		payload.PersistenceDiskGB)
 	if err != nil {
 		log.Printf("[ERROR] Failed to create WordPress PV: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		respondJSON(w, APIResponse{
 			Success: false,
-			Message: "Failed to create WordPress PV",
+			Message: fmt.Sprintf("Failed to create WordPress PV: %v", err),
 		})
 		return
 	}
@@ -169,16 +193,15 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		respondJSON(w, APIResponse{
 			Success: false,
-			Message: "Failed to create WordPress PVC",
+			Message: fmt.Sprintf("Failed to create WordPress PVC: %v", err),
 		})
 		return
 	}
 
 	// 4. Create Secret with random credentials for MySQL root and wordpress user.
-	dbSecretName := payload.DeploymentName + "-db-secret"
 	log.Printf("[INFO] Creating combined MySQL & WordPress secret: %s", dbSecretName)
 
-	err = createWPMySQLSecret(ctx, clientSet, payload.Namespace, dbSecretName, payload.DeploymentName)
+	err = createWPMySQLSecret(ctx, clientSet, payload.Namespace, dbSecretName, dbServiceName)
 	if err != nil {
 		log.Printf("[ERROR] Failed to create MySQL/WordPress Secret: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -190,9 +213,6 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Deploy MySQL (Deployment + Service)
-	dbDeploymentName := payload.DeploymentName + "-db"
-	dbServiceName := payload.DeploymentName + "-db-svc"
-
 	log.Printf("[INFO] Creating MySQL deployment: %s", dbDeploymentName)
 	err = createMySQLDeployment(ctx, clientSet, payload.Namespace, dbDeploymentName, dbPVCName, dbSecretName)
 	if err != nil {
@@ -231,10 +251,7 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Println("[INFO] MySQL deployment is running and ready.")
 
-	// 7. Deploy WordPress (Deployment + Service), referencing the same secret
-	wpDeploymentName := payload.DeploymentName + "-wp"
-	wpServiceName := payload.DeploymentName + "-wp-svc"
-
+	// 7. Deploy WordPress (Deployment + Service)
 	log.Printf("[INFO] Creating WordPress deployment: %s", wpDeploymentName)
 	err = createWordPressDeployment(ctx, clientSet, payload.Namespace, wpDeploymentName, wpPVCName, dbSecretName, dbServiceName)
 	if err != nil {
@@ -273,7 +290,7 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Println("[INFO] WordPress deployment is running and ready.")
 
-	// 9. All done, build a summary
+	// 9. Build a summary
 	resources := []string{
 		"Namespace: " + payload.Namespace,
 		"PV: " + dbPVName,
@@ -296,8 +313,54 @@ func handleCreateWordPress(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Utility to send JSON response
+// respondJSON is a helper to send JSON responses.
 func respondJSON(w http.ResponseWriter, resp APIResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// buildResourceName constructs a Kubernetes resource name that is guaranteed
+// to be ≤ 60 characters. It uses the format:
+//
+//	<prefix> + "-" + <suffix> + "-" + <resourceType>
+//
+// Where:
+//   - <prefix> is truncated if it’s too long
+//   - <suffix> is 5 random chars
+//   - <resourceType> is a short string like "db-pv" or "wp-svc"
+func buildResourceName(userPrefix, resourceType, suffix string) string {
+	// We want the final string <= 60 chars total.
+	// We'll do: userPrefix + "-" + suffix + "-" + resourceType
+	// So total length = len(userPrefix) + 1 + len(suffix) + 1 + len(resourceType).
+	// That is len(userPrefix) + len(resourceType) + len(suffix) + 2.
+	maxTotal := 60
+	// We know suffix is always 5 chars. So let's define:
+	fixedLen := len(resourceType) + 5 + 2 // resourceType + suffix + 2 dashes
+
+	// The user prefix can occupy the remainder:
+	allowed := maxTotal - fixedLen
+	if allowed < 0 {
+		// if resourceType + suffix + 2 alone exceed 60 (extremely unlikely), fallback to a minimal prefix
+		allowed = 0
+	}
+	if len(userPrefix) > allowed {
+		userPrefix = userPrefix[:allowed]
+	}
+	return fmt.Sprintf("%s-%s-%s", userPrefix, suffix, resourceType)
+}
+
+// generateRandomSuffix creates a random string of length n from [a-z0-9].
+func generateRandomSuffix(n int) (string, error) {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	result := make([]byte, n)
+	max := big.NewInt(int64(len(chars)))
+
+	for i := 0; i < n; i++ {
+		randIndex, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", err
+		}
+		result[i] = chars[randIndex.Int64()]
+	}
+	return string(result), nil
 }

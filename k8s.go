@@ -175,8 +175,15 @@ func createPersistentVolumeClaim(ctx context.Context, clientSet *kubernetes.Clie
 
 // createWPMySQLSecret generates random passwords and stores all needed environment variables
 // for both MySQL and WordPress in a single Secret.
-func createWPMySQLSecret(ctx context.Context, clientSet *kubernetes.Clientset, namespace, secretName, deployName string) error {
-	// Generate random root password and user password
+func createWPMySQLSecret(
+	ctx context.Context,
+	clientSet *kubernetes.Clientset,
+	namespace,
+	secretName,
+	dbSvcName string,
+) error {
+
+	// Generate random passwords
 	rootPass, err := generateRandomPassword(16)
 	if err != nil {
 		return fmt.Errorf("failed to generate root password: %w", err)
@@ -186,18 +193,14 @@ func createWPMySQLSecret(ctx context.Context, clientSet *kubernetes.Clientset, n
 		return fmt.Errorf("failed to generate wordpress user password: %w", err)
 	}
 
-	// We'll define environment variables so MySQL initializes automatically:
-	// MYSQL_ROOT_PASSWORD, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD
-	// And WordPress environment variables:
-	// WORDPRESS_DB_HOST, WORDPRESS_DB_USER, WORDPRESS_DB_PASSWORD, WORDPRESS_DB_NAME
-	// We store them all in one secret as Key=Value pairs.
 	secretData := map[string][]byte{
 		"MYSQL_ROOT_PASSWORD": []byte(rootPass),
 		"MYSQL_DATABASE":      []byte("wordpressdb"),
 		"MYSQL_USER":          []byte("wordpress"),
 		"MYSQL_PASSWORD":      []byte(wpPass),
 
-		"WORDPRESS_DB_HOST":     []byte(deployName + "-db-svc"), // e.g. "ramanuj-db-svc"
+		// Use dbSvcName directly
+		"WORDPRESS_DB_HOST":     []byte(dbSvcName),
 		"WORDPRESS_DB_USER":     []byte("wordpress"),
 		"WORDPRESS_DB_PASSWORD": []byte(wpPass),
 		"WORDPRESS_DB_NAME":     []byte("wordpressdb"),
@@ -404,25 +407,39 @@ func createWordPressDeployment(ctx context.Context, clientSet *kubernetes.Client
 									MountPath: "/var/www/html",
 								},
 							},
+							// More forgiving readiness probe
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/",
+										Path: "/wp-admin/install.php",
 										Port: intstr.FromInt(80),
 									},
 								},
+								// The container waits 10s before first check,
+								// then checks every 5s, and allows up to 5 seconds
+								// for a response. If it fails 5 times consecutively,
+								// the container is marked not ready.
 								InitialDelaySeconds: 10,
 								PeriodSeconds:       5,
+								TimeoutSeconds:      5,
+								FailureThreshold:    5,
 							},
+							// More forgiving liveness probe
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/",
+										Path: "/wp-admin/install.php",
 										Port: intstr.FromInt(80),
 									},
 								},
+								// The container waits 30s before first check,
+								// then checks every 10s, and allows up to 5 seconds
+								// for a response. If it fails 5 times in a row,
+								// Kubernetes restarts the container.
 								InitialDelaySeconds: 30,
 								PeriodSeconds:       10,
+								TimeoutSeconds:      5,
+								FailureThreshold:    5,
 							},
 						},
 					},
