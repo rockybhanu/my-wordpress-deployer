@@ -3,8 +3,8 @@ Content-Type: application/json
 
 {
   "kubeconfig": "/home/ramanuj/.kube/config",
-  "namespace": "lapibazar",
+  "namespace": "lapibazar-com",
   "persistence_disk_size": 10,
   "database_disk_size": 5,
-  "deployment_name": "lapi"
+  "deployment_name": "wp-website"
 }

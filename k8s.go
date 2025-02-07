@@ -12,7 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	resource "k8s.io/apimachinery/pkg/api/resource"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intst
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -257,7 +257,7 @@ func createMySQLDeployment(ctx context.Context, clientSet *kubernetes.Clientset,
 					Containers: []corev1.Container{
 						{
 							Name:  "mysql",
-							Image: "mysql:latest",
+							Image: "mysql:8",
 							Ports: []corev1.ContainerPort{
 								{
 									ContainerPort: 3306,
@@ -388,7 +388,7 @@ func createWordPressDeployment(ctx context.Context, clientSet *kubernetes.Client
 					Containers: []corev1.Container{
 						{
 							Name:  "wordpress",
-							Image: "wordpress:latest",
+							Image: "wordpress:6.7.1",
 							Ports: []corev1.ContainerPort{
 								{
 									ContainerPort: 80,
